@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DeFi Radar Mini</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div class="topbar">
+      <div class="topbar-left">
+        <button id="btnSettings" class="icon-btn" title="Settings">⚙️</button>
+      </div>
+      <div class="topbar-title" id="topTitle">DeFi Radar</div>
+      <div class="topbar-right">
+        <button id="btnRefresh" class="icon-btn" title="Refresh">⟳</button>
+      </div>
+    </div>
+
+    <main id="view" class="view"></main>
+
+    <nav class="tabs">
+      <button class="tab" data-route="portfolio">Portfolio</button>
+      <button class="tab" data-route="earn">Earn</button>
+      <button class="tab" data-route="alerts">Alerts</button>
+    </nav>
+  </div>
+
+  <div id="sheet" class="sheet hidden">
+    <div class="sheet-backdrop" id="sheetBackdrop"></div>
+    <div class="sheet-card" id="sheetCard"></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

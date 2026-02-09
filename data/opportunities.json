@@ -1,0 +1,53 @@
+{
+  "items": [
+    {
+      "id": "evm_eth_stake_lido",
+      "chain": "evm",
+      "asset": "ETH",
+      "title": "Stake ETH (Liquid staking)",
+      "apy": 3.6,
+      "lockupDays": 0,
+      "risk": "medium",
+      "whyRisk": "Smart-contract + liquid staking risks. No lockup, but protocol risk exists.",
+      "actionType": "stake",
+      "actionUrl": "https://stake.lido.fi/"
+    },
+    {
+      "id": "evm_usdc_lend_aave",
+      "chain": "evm",
+      "asset": "USDC",
+      "title": "Lend USDC",
+      "apy": 6.2,
+      "lockupDays": 0,
+      "risk": "medium",
+      "whyRisk": "Lending protocol risks and variable rates.",
+      "actionType": "lend",
+      "actionUrl": "https://app.aave.com/"
+    },
+    {
+      "id": "sol_sol_stake_marinade",
+      "chain": "sol",
+      "asset": "SOL",
+      "title": "Stake SOL (Liquid staking)",
+      "apy": 7.1,
+      "lockupDays": 0,
+      "risk": "medium",
+      "whyRisk": "Smart-contract + liquid staking risks. Yield is an estimate.",
+      "actionType": "stake",
+      "actionUrl": "https://app.marinade.finance/"
+    },
+    {
+      "id": "sol_usdc_lend_marginfi",
+      "chain": "sol",
+      "asset": "USDC",
+      "title": "Lend USDC",
+      "apy": 8.4,
+      "lockupDays": 0,
+      "risk": "high",
+      "whyRisk": "Protocol risk + variable rates + market conditions.",
+      "actionType": "lend",
+      "actionUrl": "https://app.marginfi.com/"
+    }
+  ],
+  "updatedAt": "2026-02-09T18:48:40.275404Z"
+}
