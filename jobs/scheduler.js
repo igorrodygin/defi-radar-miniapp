@@ -46,6 +46,7 @@ async function checkAlertsOnce() {
       if (a.asset === "ETH") current = prices.ETH;
       if (a.asset === "BTC") current = prices.BTC;
       if (a.asset === "SOL") current = prices.SOL;
+        if (a.asset === "TON") current = prices.TON;
     } else if (a.type === "apy") {
       const o = oppByAssetChain.get(`${a.asset}:${a.chain}`);
       current = o ? Number(o.apy) : null;

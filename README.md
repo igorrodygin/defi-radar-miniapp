@@ -89,6 +89,12 @@ Instead we open a recommended DeFi URL inside wallet in-app browsers:
 
 ---
 
+
+## TON portfolio support
+
+This build supports TON native balance via TON Center API v2 `getAddressBalance`.
+Requests without API key are limited to ~1 request per second; for higher limits set `TONCENTER_API_KEY`.
+
 ## 5) API quick reference
 
 - `POST /api/auth/telegram` { initData }

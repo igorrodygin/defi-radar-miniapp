@@ -88,7 +88,7 @@ app.get("/api/me", authMiddleware, (req, res) => {
 app.post("/api/wallet/active", authMiddleware, (req, res) => {
   try {
     const schema = z.object({
-      chain: z.enum(["evm", "btc", "sol"]),
+      chain: z.enum(["evm", "btc", "sol", "ton"]),
       address: z.string().min(4)
     });
     const { chain, address } = schema.parse(req.body);
