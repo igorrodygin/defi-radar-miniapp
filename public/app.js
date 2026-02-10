@@ -1,4 +1,3 @@
-\
 /* global Telegram */
 const state = {
   token: null,
