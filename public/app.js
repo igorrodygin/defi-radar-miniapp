@@ -1,11 +1,20 @@
+\
 /* global Telegram */
 const state = {
   token: null,
   user: null,
   route: "portfolio",
-  chain: localStorage.getItem("chain") || "evm",
-  address: localStorage.getItem("address") || "",
+
+  // Wallet connections: one address per chain (evm/btc/sol/ton)
+  wallets: {}, // { evm: "0x...", sol: "...", ton: "..." }
+
+  // Latest fetched portfolios per chain
+  portfolios: {}, // { evm: {...}, sol: {...} }
+
+  // UI prefs
+  selectedChain: localStorage.getItem("selectedChain") || "evm",
   demo: localStorage.getItem("demo") === "true",
+
   opportunities: [],
 };
 
@@ -50,7 +59,7 @@ for (const b of elTabs) {
 }
 
 elRefresh.addEventListener("click", () => {
-  if (state.route === "portfolio") loadPortfolio();
+  if (state.route === "portfolio") loadAllPortfolios();
   if (state.route === "earn") loadEarn();
 });
 
@@ -63,6 +72,17 @@ function fmtUsd(n) {
 function fmtNum(n) {
   if (n == null || Number.isNaN(n)) return "—";
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 6 }).format(n);
+}
+function maskAddr(a) {
+  if (!a || a.length < 10) return a || "—";
+  return `${a.slice(0, 4)}…${a.slice(-4)}`;
+}
+function chainLabel(chain) {
+  if (chain === "evm") return "EVM (ETH)";
+  if (chain === "btc") return "Bitcoin";
+  if (chain === "sol") return "Solana";
+  if (chain === "ton") return "TON";
+  return chain;
 }
 
 async function api(path, opts = {}) {
@@ -82,12 +102,11 @@ function isInTelegram() {
 }
 
 async function authenticate() {
-  // Telegram auth
   if (isInTelegram()) {
     Telegram.WebApp.ready();
     Telegram.WebApp.expand();
-    const initData = Telegram.WebApp.initData;
 
+    const initData = Telegram.WebApp.initData;
     const r = await api("/api/auth/telegram", {
       method: "POST",
       body: JSON.stringify({ initData })
@@ -97,11 +116,11 @@ async function authenticate() {
     return;
   }
 
-  // Dev auth fallback
+  // Dev auth fallback (disable in prod)
   try {
     const r = await api("/api/auth/dev", {
       method: "POST",
-      body: JSON.stringify({ userId: "dev_user", locale: navigator.language?.slice(0,2) || "en" })
+      body: JSON.stringify({ userId: "dev_user", locale: navigator.language?.slice(0, 2) || "en" })
     });
     state.token = r.token;
     state.user = r.user;
@@ -111,45 +130,46 @@ async function authenticate() {
   }
 }
 
-function chainLabel(chain) {
-  if (chain === "evm") return "EVM (ETH)";
-  if (chain === "btc") return "Bitcoin";
-  if (chain === "sol") return "Solana";
-  if (chain === "ton") return "TON";
-  return chain;
-}
-
-function riskBadge(risk) {
-  const klass = risk === "low" ? "ok" : (risk === "medium" ? "warn" : "danger");
-  return `<span class="badge ${klass}">${risk.toUpperCase()}</span>`;
-}
-
-function walletChoicesForChain(chain) {
-  // For MVP we only expose relevant wallets
-  if (chain === "evm") return ["metamask"];
-  if (chain === "sol") return ["phantom"];
-  if (chain === "ton") return ["telegram"];
-  // BTC: no in-app browser; show generic
-  return ["generic"];
-}
-
-function buildWalletLink(wallet, url, refUrl) {
-  // url is full https://...
+async function loadWallets() {
   try {
-    const u = new URL(url);
-    const dapp = (u.host + u.pathname).replace(/\/+$/, "");
-    if (wallet === "metamask") {
-      return `https://link.metamask.io/dapp/${dapp}`;
+    const r = await api("/api/wallets");
+    const wallets = {};
+    for (const w of (r.wallets || [])) wallets[w.chain] = w.address;
+    state.wallets = wallets;
+
+    // Pick default selected chain
+    const chains = Object.keys(wallets);
+    if (chains.length && !wallets[state.selectedChain]) {
+      state.selectedChain = chains[0];
+      localStorage.setItem("selectedChain", state.selectedChain);
     }
-    if (wallet === "phantom") {
-      return `https://phantom.app/ul/browse/${encodeURIComponent(url)}?ref=${encodeURIComponent(refUrl)}`;
-    }
-    if (wallet === "telegram") {
-      return "https://t.me/wallet";
-    }
-    return url;
-  } catch {
-    return url;
+  } catch (e) {
+    // Backward-compat fallback (older backend)
+    try {
+      const r = await api("/api/wallet/active");
+      if (r.wallet?.chain && r.wallet?.address) {
+        state.wallets = { [r.wallet.chain]: r.wallet.address };
+      }
+    } catch (_) {}
+  }
+}
+
+async function upsertWallet(chain, address) {
+  await api("/api/wallets", { method: "POST", body: JSON.stringify({ chain, address }) });
+  state.wallets[chain] = address;
+  state.selectedChain = chain;
+  localStorage.setItem("selectedChain", chain);
+}
+
+async function removeWallet(chain) {
+  await api(`/api/wallets/${encodeURIComponent(chain)}`, { method: "DELETE" });
+  delete state.wallets[chain];
+  delete state.portfolios[chain];
+
+  const remaining = Object.keys(state.wallets);
+  if (remaining.length) {
+    state.selectedChain = remaining[0];
+    localStorage.setItem("selectedChain", state.selectedChain);
   }
 }
 
@@ -192,17 +212,21 @@ function render() {
   }
 }
 
+/* -------------------- PORTFOLIO (multi-wallet) -------------------- */
+
 function renderPortfolio() {
+  const connectedChains = Object.keys(state.wallets);
+
   elView.innerHTML = `
     <div class="card">
-      <h2>Connected</h2>
-      <div class="row gap8">
-        <span class="badge">${chainLabel(state.chain)}</span>
-        <span class="muted">${state.demo ? "Demo" : (state.address ? state.address : "No address")}</span>
-      </div>
+      <h2>Connected wallets</h2>
+      <div class="muted">Connect one address per supported chain. Read-only. No private keys.</div>
+
+      <div id="walletList" style="margin-top:10px;"></div>
 
       <hr />
 
+      <h3 style="margin:0 0 8px 0;">Add / update wallet</h3>
       <label>Chain</label>
       <select id="chainSelect">
         <option value="evm">EVM (ETH)</option>
@@ -212,56 +236,113 @@ function renderPortfolio() {
       </select>
 
       <label style="margin-top:10px;">Public address</label>
-      <input id="addressInput" class="input" placeholder="0x… / bc1… / …" value="${state.address || ""}" />
+      <input id="addressInput" class="input" placeholder="0x… / bc1… / Sol… / UQ… (TON)" value="" />
 
-      <button id="btnConnect" class="btn">${state.address ? "Update address" : "Connect"}</button>
-      <button id="btnDemo" class="btn secondary">Try demo</button>
+      <button id="btnConnect" class="btn">Save wallet</button>
+      <button id="btnDemo" class="btn secondary">${state.demo ? "Disable demo" : "Try demo"}</button>
     </div>
 
     <div id="portfolioResult"></div>
   `;
 
+  // Render connected wallets list
+  const walletList = document.getElementById("walletList");
+  if (!connectedChains.length) {
+    walletList.innerHTML = `<div class="muted">No wallets connected yet.</div>`;
+  } else {
+    walletList.innerHTML = `
+      <div class="list">
+        ${connectedChains.sort().map((ch) => `
+          <div class="list-item">
+            <div class="row">
+              <div>
+                <span class="badge">${chainLabel(ch)}</span>
+                <div class="muted" style="margin-top:6px; word-break:break-all;">${maskAddr(state.wallets[ch])}</div>
+              </div>
+              <div class="row gap8">
+                <button class="btn inline secondary" data-view="${ch}">View</button>
+                <button class="btn inline danger" data-remove="${ch}">Remove</button>
+              </div>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+
+    walletList.querySelectorAll("[data-view]").forEach((b) => {
+      b.addEventListener("click", () => {
+        state.selectedChain = b.dataset.view;
+        localStorage.setItem("selectedChain", state.selectedChain);
+        showToast(`Viewing ${chainLabel(state.selectedChain)}`);
+        loadAllPortfolios();
+      });
+    });
+
+    walletList.querySelectorAll("[data-remove]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        const ch = b.dataset.remove;
+        if (!confirm(`Remove ${chainLabel(ch)} wallet?`)) return;
+        try {
+          await removeWallet(ch);
+          showToast("Removed");
+          renderPortfolio();
+          if (!state.demo) await loadAllPortfolios();
+        } catch (e) {
+          showToast(e.message);
+        }
+      });
+    });
+  }
+
   const chainSel = document.getElementById("chainSelect");
   const addrIn = document.getElementById("addressInput");
-  chainSel.value = state.chain;
+  chainSel.value = state.selectedChain;
 
   chainSel.addEventListener("change", () => {
-    state.chain = chainSel.value;
-    localStorage.setItem("chain", state.chain);
-    renderPortfolio();
+    state.selectedChain = chainSel.value;
+    localStorage.setItem("selectedChain", state.selectedChain);
+    // Prefill with existing wallet address (if any)
+    addrIn.value = state.wallets[state.selectedChain] || "";
   });
 
+  // Prefill address with current chain if connected
+  addrIn.value = state.wallets[state.selectedChain] || "";
+
   document.getElementById("btnDemo").addEventListener("click", async () => {
-    state.demo = true;
-    localStorage.setItem("demo", "true");
-    showToast("Demo mode enabled");
-    document.getElementById("portfolioResult").innerHTML = demoPortfolioHtml();
+    state.demo = !state.demo;
+    localStorage.setItem("demo", state.demo ? "true" : "false");
+    if (state.demo) {
+      showToast("Demo mode enabled");
+      document.getElementById("portfolioResult").innerHTML = demoPortfolioHtml();
+    } else {
+      showToast("Demo mode disabled");
+      await loadAllPortfolios();
+    }
   });
 
   document.getElementById("btnConnect").addEventListener("click", async () => {
     state.demo = false;
     localStorage.setItem("demo", "false");
-    state.address = addrIn.value.trim();
-    localStorage.setItem("address", state.address);
-    localStorage.setItem("chain", state.chain);
 
-    if (!state.address) return showToast("Enter an address");
+    const chain = chainSel.value;
+    const address = addrIn.value.trim();
+    if (!address) return showToast("Enter an address");
 
     try {
-      await api("/api/wallet/active", {
-        method: "POST",
-        body: JSON.stringify({ chain: state.chain, address: state.address })
-      });
-    } catch (_) {}
-
-    await loadPortfolio();
+      await upsertWallet(chain, address);
+      showToast("Saved");
+      renderPortfolio();
+      await loadAllPortfolios();
+    } catch (e) {
+      showToast(e.message);
+    }
   });
 
   // initial load
   if (state.demo) {
     document.getElementById("portfolioResult").innerHTML = demoPortfolioHtml();
-  } else if (state.address) {
-    loadPortfolio();
+  } else {
+    loadAllPortfolios();
   }
 }
 
@@ -274,11 +355,11 @@ function demoPortfolioHtml() {
     </div>
 
     <div class="card">
-      <h2>Assets</h2>
+      <h2>Wallets</h2>
       <div class="list">
-        <div class="list-item row"><span>ETH</span><span>0.42</span></div>
-        <div class="list-item row"><span>USDC</span><span>250</span></div>
-        <div class="list-item row"><span>SOL</span><span>12.3</span></div>
+        <div class="list-item row"><span><strong>EVM</strong></span><span>$700.00</span></div>
+        <div class="list-item row"><span><strong>SOL</strong></span><span>$400.00</span></div>
+        <div class="list-item row"><span><strong>TON</strong></span><span>$134.56</span></div>
       </div>
     </div>
 
@@ -298,51 +379,34 @@ function demoPortfolioHtml() {
   `;
 }
 
-async function loadPortfolio() {
+async function loadAllPortfolios() {
   const target = document.getElementById("portfolioResult");
   if (!target) return;
-  target.innerHTML = `<div class="card"><h2>Loading…</h2><div class="muted">Fetching on-chain balance</div></div>`;
 
-  try {
-    const data = await api(`/api/portfolio?chain=${encodeURIComponent(state.chain)}&address=${encodeURIComponent(state.address)}`);
+  const chains = Object.keys(state.wallets);
+  if (!chains.length) {
     target.innerHTML = `
       <div class="card">
-        <h2>Total balance</h2>
-        <div style="font-size: 28px; font-weight: 800;">${fmtUsd(data.totalFiat)}</div>
-        <div class="muted">Last updated: ${new Date(data.updatedAt).toLocaleString()}</div>
-      </div>
-
-      <div class="card">
-        <h2>Assets</h2>
-        <div class="list">
-          ${data.assets.map(a => `
-            <div class="list-item row">
-              <span><strong>${a.symbol}</strong></span>
-              <span class="small">${fmtNum(a.amount)} <span class="muted">${fmtUsd(a.fiat)}</span></span>
-            </div>
-          `).join("")}
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>What you can do now</h2>
-        <div class="list">
-          <div class="list-item">
-            <div class="row"><strong>Explore Earn</strong><span class="muted">Find APY options</span></div>
-            <button class="btn inline" id="btnGoEarn">Open</button>
-          </div>
-          <div class="list-item">
-            <div class="row"><strong>Create alert</strong><span class="muted">Price/APY notifications</span></div>
-            <button class="btn inline" id="btnGoAlerts">Create</button>
-          </div>
-        </div>
+        <h2>No wallets connected</h2>
+        <div class="muted">Add at least one address above to see portfolio.</div>
       </div>
     `;
-    document.getElementById("btnGoEarn")?.addEventListener("click", () => setRoute("earn"));
-    document.getElementById("btnGoAlerts")?.addEventListener("click", () => {
-      setRoute("alerts");
-      setTimeout(() => openCreateAlertSheet(), 0);
-    });
+    return;
+  }
+
+  target.innerHTML = `<div class="card"><h2>Loading…</h2><div class="muted">Fetching balances</div></div>`;
+
+  try {
+    const results = await Promise.all(chains.map(async (chain) => {
+      const address = state.wallets[chain];
+      const data = await api(`/api/portfolio?chain=${encodeURIComponent(chain)}&address=${encodeURIComponent(address)}`);
+      return [chain, data];
+    }));
+
+    state.portfolios = {};
+    for (const [chain, data] of results) state.portfolios[chain] = data;
+
+    renderPortfolioResults();
   } catch (e) {
     target.innerHTML = `
       <div class="card">
@@ -351,7 +415,113 @@ async function loadPortfolio() {
         <button class="btn" id="btnRetry">Retry</button>
       </div>
     `;
-    document.getElementById("btnRetry").addEventListener("click", loadPortfolio);
+    document.getElementById("btnRetry")?.addEventListener("click", loadAllPortfolios);
+  }
+}
+
+function renderPortfolioResults() {
+  const target = document.getElementById("portfolioResult");
+  if (!target) return;
+
+  const chains = Object.keys(state.portfolios);
+  const sum = chains.reduce((acc, ch) => acc + (state.portfolios[ch]?.totalFiat || 0), 0);
+
+  target.innerHTML = `
+    <div class="card">
+      <h2>Total across wallets</h2>
+      <div style="font-size: 28px; font-weight: 800;">${fmtUsd(sum)}</div>
+      <div class="muted">Sum of available fiat estimates</div>
+    </div>
+
+    ${chains.sort().map((ch) => {
+      const p = state.portfolios[ch];
+      return `
+        <div class="card">
+          <div class="row">
+            <h2 style="margin:0;">${chainLabel(ch)}</h2>
+            <span class="badge">${maskAddr(state.wallets[ch])}</span>
+          </div>
+          <div style="font-size: 22px; font-weight: 800; margin-top:8px;">${fmtUsd(p.totalFiat)}</div>
+          <div class="muted">Last updated: ${new Date(p.updatedAt).toLocaleString()}</div>
+
+          <hr />
+          <h3>Assets</h3>
+          <div class="list">
+            ${(p.assets || []).map(a => `
+              <div class="list-item row">
+                <span><strong>${a.symbol}</strong></span>
+                <span class="small">${fmtNum(a.amount)} <span class="muted">${fmtUsd(a.fiat)}</span></span>
+              </div>
+            `).join("")}
+          </div>
+
+          <hr />
+          <div class="row">
+            <div>
+              <strong>What you can do now</strong>
+              <div class="muted">Explore earn options for this chain</div>
+            </div>
+            <button class="btn inline" data-goearn="${ch}">Earn</button>
+          </div>
+        </div>
+      `;
+    }).join("")}
+
+    <div class="card">
+      <h2>Quick actions</h2>
+      <div class="list">
+        <div class="list-item">
+          <div class="row"><strong>Explore Earn</strong><span class="muted">Find APY options</span></div>
+          <button class="btn inline" id="btnGoEarn">Open</button>
+        </div>
+        <div class="list-item">
+          <div class="row"><strong>Create alert</strong><span class="muted">Price/APY notifications</span></div>
+          <button class="btn inline" id="btnGoAlerts">Create</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  target.querySelectorAll("[data-goearn]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const ch = b.dataset.goearn;
+      state.selectedChain = ch;
+      localStorage.setItem("selectedChain", ch);
+      setRoute("earn");
+    });
+  });
+
+  document.getElementById("btnGoEarn")?.addEventListener("click", () => setRoute("earn"));
+  document.getElementById("btnGoAlerts")?.addEventListener("click", () => {
+    setRoute("alerts");
+    setTimeout(() => openCreateAlertSheet(), 0);
+  });
+}
+
+/* -------------------- EARN -------------------- */
+
+function riskBadge(risk) {
+  const klass = risk === "low" ? "ok" : (risk === "medium" ? "warn" : "danger");
+  return `<span class="badge ${klass}">${risk.toUpperCase()}</span>`;
+}
+
+function walletChoicesForChain(chain) {
+  if (chain === "evm") return ["metamask"];
+  if (chain === "sol") return ["phantom"];
+  if (chain === "ton") return ["telegram"];
+  return ["generic"];
+}
+
+function buildWalletLink(wallet, url, refUrl) {
+  try {
+    const u = new URL(url);
+    const dapp = (u.host + u.pathname).replace(/\/+$/, "");
+    if (wallet === "metamask") return `https://link.metamask.io/dapp/${dapp}`;
+    if (wallet === "phantom") return `https://phantom.app/ul/browse/${encodeURIComponent(url)}?ref=${encodeURIComponent(refUrl)}`;
+    if (wallet === "telegram") return "https://t.me/wallet";
+    return url;
+  } catch {
+    return url;
   }
 }
 
@@ -372,10 +542,11 @@ function renderEarn() {
   `;
 
   const sel = document.getElementById("earnChain");
-  sel.value = (state.chain === "btc") ? "evm" : state.chain;
+  // Default to selectedChain, but if no opportunities for it, user can change
+  sel.value = state.selectedChain || "evm";
   sel.addEventListener("change", () => {
-    state.chain = sel.value;
-    localStorage.setItem("chain", state.chain);
+    state.selectedChain = sel.value;
+    localStorage.setItem("selectedChain", state.selectedChain);
     loadEarn();
   });
 
@@ -388,7 +559,7 @@ async function loadEarn() {
   list.innerHTML = `<div class="card"><h2>Loading…</h2><div class="muted">Fetching opportunities</div></div>`;
 
   try {
-    const data = await api(`/api/opportunities?chain=${encodeURIComponent(state.chain)}`);
+    const data = await api(`/api/opportunities?chain=${encodeURIComponent(state.selectedChain)}`);
     state.opportunities = data.items || [];
     if (!state.opportunities.length) {
       list.innerHTML = `<div class="card"><h2>No opportunities</h2><div class="muted">Try another chain.</div></div>`;
@@ -539,10 +710,8 @@ function openWalletPicker(o) {
       const wallet = el.dataset.wallet;
       const link = buildWalletLink(wallet, o.actionUrl, refUrl);
 
-      // Try to open immediately on user interaction (best for deep links)
       window.location.href = link;
 
-      // Show fallback with copy
       setTimeout(() => {
         openSheet(`
           <h2 style="margin:0 0 8px 0;">Continue in wallet</h2>
@@ -562,6 +731,8 @@ function openWalletPicker(o) {
     });
   });
 }
+
+/* -------------------- ALERTS -------------------- */
 
 function renderAlerts() {
   elView.innerHTML = `
@@ -617,7 +788,7 @@ async function loadAlerts() {
     list.querySelectorAll("input[data-toggle]").forEach(ch => {
       ch.addEventListener("change", async () => {
         try {
-          await api(`/api/alerts/${ch.dataset.toggle}`, { method: "PATCH", body: JSON.stringify({ enabled: ch.checked })});
+          await api(`/api/alerts/${ch.dataset.toggle}`, { method: "PATCH", body: JSON.stringify({ enabled: ch.checked }) });
           showToast("Saved");
         } catch (e) {
           showToast(e.message);
@@ -644,8 +815,8 @@ async function loadAlerts() {
 
 function openCreateAlertSheet(prefill = {}) {
   const defaultType = prefill.type || "price";
-  const defaultChain = prefill.chain || state.chain || "evm";
-  const defaultAsset = prefill.asset || (defaultChain === "btc" ? "BTC" : (defaultChain === "sol" ? "SOL" : "ETH"));
+  const defaultChain = prefill.chain || state.selectedChain || "evm";
+  const defaultAsset = prefill.asset || (defaultChain === "btc" ? "BTC" : (defaultChain === "sol" ? "SOL" : (defaultChain === "ton" ? "TON" : "ETH")));
 
   openSheet(`
     <h2 style="margin:0 0 8px 0;">Create alert</h2>
@@ -662,10 +833,11 @@ function openCreateAlertSheet(prefill = {}) {
         <option value="evm">evm</option>
         <option value="btc">btc</option>
         <option value="sol">sol</option>
+        <option value="ton">ton</option>
       </select>
 
       <label style="margin-top:10px;">Asset</label>
-      <input id="aAsset" class="input" placeholder="ETH / BTC / SOL" />
+      <input id="aAsset" class="input" placeholder="ETH / BTC / SOL / TON" />
 
       <label style="margin-top:10px;">Condition</label>
       <select id="aCond">
@@ -711,10 +883,7 @@ function openCreateAlertSheet(prefill = {}) {
     if (!Number.isFinite(threshold) || threshold <= 0) return showToast("Threshold must be > 0");
 
     try {
-      await api("/api/alerts", {
-        method: "POST",
-        body: JSON.stringify({ type, chain, asset, condition, threshold, frequency })
-      });
+      await api("/api/alerts", { method: "POST", body: JSON.stringify({ type, chain, asset, condition, threshold, frequency }) });
       closeSheet();
       loadAlerts();
     } catch (e) {
@@ -723,16 +892,29 @@ function openCreateAlertSheet(prefill = {}) {
   });
 }
 
+/* -------------------- SETTINGS -------------------- */
+
 function renderSettings() {
+  const chains = Object.keys(state.wallets);
   elView.innerHTML = `
     <div class="card">
       <h2>Account</h2>
       <div class="muted">User: ${state.user?.id || "—"}</div>
       <hr />
-      <h3 style="margin-top:0;">Wallet</h3>
-      <div class="muted">Chain: ${chainLabel(state.chain)}</div>
-      <div class="muted">Address: ${state.address ? state.address : "—"}</div>
-      <button class="btn secondary" id="btnClearWallet">Remove address</button>
+      <h3 style="margin-top:0;">Connected wallets</h3>
+      ${chains.length ? `
+        <div class="list" style="margin-top:10px;">
+          ${chains.sort().map((ch) => `
+            <div class="list-item row">
+              <div>
+                <strong>${chainLabel(ch)}</strong>
+                <div class="muted" style="word-break:break-all;">${maskAddr(state.wallets[ch])}</div>
+              </div>
+              <button class="btn inline danger" data-remove="${ch}">Remove</button>
+            </div>
+          `).join("")}
+        </div>
+      ` : `<div class="muted">No wallets connected.</div>`}
     </div>
 
     <div class="card">
@@ -751,21 +933,28 @@ function renderSettings() {
   `;
 
   document.getElementById("btnBackToPortfolio").addEventListener("click", () => setRoute("portfolio"));
-  document.getElementById("btnClearWallet").addEventListener("click", () => {
-    if (!confirm("Remove address from this device?")) return;
-    state.address = "";
-    state.demo = false;
-    localStorage.removeItem("address");
-    localStorage.setItem("demo", "false");
-    showToast("Removed");
-    setRoute("portfolio");
+  elView.querySelectorAll("[data-remove]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      const ch = b.dataset.remove;
+      if (!confirm(`Remove ${chainLabel(ch)} wallet?`)) return;
+      try {
+        await removeWallet(ch);
+        showToast("Removed");
+        renderSettings();
+      } catch (e) {
+        showToast(e.message);
+      }
+    });
   });
 }
 
-// Boot
+/* -------------------- BOOT -------------------- */
+
 (async function boot() {
   render();
   await authenticate();
+  await loadWallets();
+
   // Attach click handlers for demo buttons in injected HTML (demoPortfolioHtml)
   document.addEventListener("click", (e) => {
     const t = e.target;
@@ -777,6 +966,5 @@ function renderSettings() {
   });
 
   render();
-  // default route
   setRoute("portfolio");
 })();

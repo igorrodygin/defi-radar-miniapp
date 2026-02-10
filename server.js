@@ -13,7 +13,9 @@ const {
   setChatId,
   getUser,
   saveActiveWallet,
+  listActiveWallets,
   getActiveWallet,
+  deactivateWallet,
   listAlerts,
   createAlert,
   updateAlertEnabled,
@@ -102,6 +104,43 @@ app.post("/api/wallet/active", authMiddleware, (req, res) => {
 app.get("/api/wallet/active", authMiddleware, (req, res) => {
   const w = getActiveWallet({ tgUserId: req.user.tgUserId });
   res.json({ wallet: w ? { chain: w.chain, address: w.address } : null });
+});
+
+
+// Multi-wallet endpoints (one wallet per chain)
+app.get("/api/wallets", authMiddleware, (req, res) => {
+  const wallets = listActiveWallets({ tgUserId: req.user.tgUserId }).map((w) => ({
+    chain: w.chain,
+    address: w.address
+  }));
+  res.json({ wallets });
+});
+
+app.post("/api/wallets", authMiddleware, (req, res) => {
+  try {
+    const schema = z.object({
+      chain: z.enum(["evm", "btc", "sol", "ton"]),
+      address: z.string().min(4)
+    });
+    const { chain, address } = schema.parse(req.body);
+    saveActiveWallet({ tgUserId: req.user.tgUserId, chain, address });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete("/api/wallets/:chain", authMiddleware, (req, res) => {
+  try {
+    const chain = String(req.params.chain);
+    if (!["evm", "btc", "sol", "ton"].includes(chain)) {
+      return res.status(400).json({ error: "Unsupported chain" });
+    }
+    deactivateWallet({ tgUserId: req.user.tgUserId, chain });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // Opportunities (static catalog)
