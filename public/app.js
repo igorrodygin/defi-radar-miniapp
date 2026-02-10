@@ -208,6 +208,7 @@ function renderPortfolio() {
         <option value="evm">EVM (ETH)</option>
         <option value="btc">Bitcoin</option>
         <option value="sol">Solana</option>
+        <option value="ton">TON</option>
       </select>
 
       <label style="margin-top:10px;">Public address</label>
@@ -362,6 +363,7 @@ function renderEarn() {
       <select id="earnChain">
         <option value="evm">EVM</option>
         <option value="sol">Solana</option>
+        <option value="ton">TON</option>
       </select>
       <div class="muted" style="margin-top:8px;">Opportunities are estimates. Not financial advice.</div>
     </div>
